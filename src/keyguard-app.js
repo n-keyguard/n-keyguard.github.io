@@ -2,10 +2,10 @@
 // Owns all sensitive flows: key creation, import, signing, export, deletion.
 // Passwords never leave this origin. Keys never leave this file's worker.
 //
-// Replace [WALLET_ORIGIN] with the actual wallet origin before deploying,
+// Replace https://tutanch.github.io with the actual wallet origin before deploying,
 // e.g. https://tutanch.github.io
 
-const WALLET_ORIGIN = '[WALLET_ORIGIN]';
+const WALLET_ORIGIN = 'https://tutanch.github.io';
 
 // ── Worker bridge ─────────────────────────────────────────────────────────
 
