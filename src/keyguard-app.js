@@ -1160,12 +1160,14 @@ function wireBiometricBatchSign(info, passwordSet, args, subtitle) {
         biometricBtn.querySelector('.biometric-hint').textContent = 'Signing...';
         try {
             const prfKey = await getWebAuthnPrfKey(info.credentialId, info.prfSalt);
-            const { serializedTransactions } = await callWorker('signBatchTransaction', {
+            const { serializedTransactions, encryptedData } = await callWorker('signBatchTransaction', {
                 ...args, prfKey: Array.from(prfKey),
             });
             prfKey.fill(0);
             const transfer = serializedTransactions.map(tx => tx.buffer);
-            resolveSession({ serializedTransactions }, transfer);
+            const result = { serializedTransactions };
+            if (encryptedData) result.encryptedData = encryptedData;
+            resolveSession(result, transfer);
         } catch (err) {
             biometricBtn.disabled = false;
             biometricBtn.querySelector('.biometric-hint').textContent = 'Tap to sign';
@@ -1200,12 +1202,14 @@ function showPasswordFormForBatchSign(args, subtitle) {
         const btn = ui.querySelector('#btn-submit');
         setButtonState(btn, 'Signing...', true);
         try {
-            const { serializedTransactions } = await callWorker('signBatchTransaction', {
+            const { serializedTransactions, encryptedData } = await callWorker('signBatchTransaction', {
                 ...args, password: pw,
             });
             ui.querySelector('#password').value = '';
             const transfer = serializedTransactions.map(tx => tx.buffer);
-            resolveSession({ serializedTransactions }, transfer);
+            const result = { serializedTransactions };
+            if (encryptedData) result.encryptedData = encryptedData;
+            resolveSession(result, transfer);
         } catch (err) {
             ui.querySelector('#password').value = '';
             setButtonState(btn, 'Continue', false);
@@ -1483,9 +1487,10 @@ function renderAccountPicker(addresses, balances = {}) {
         </div>`;
 }
 
-// Shared helper: scan accounts, fetch balances, show picker, restore selected.
-// Used by both restoreWithPasskey and switchAccount flows.
-async function showAccountPickerFlow({ prfKey, credentialId, allowOverwrite, errorEl }) {
+// Shared helper: scan accounts, fetch balances, restore selected.
+// When autoSelect is true (default), picks the highest-balance account automatically.
+// When false, shows an interactive picker (used by switchAccount).
+async function showAccountPickerFlow({ prfKey, credentialId, allowOverwrite, errorEl, autoSelect = true }) {
     let addresses;
     try {
         const scan = await callWorker('scanAccountAddresses', {
@@ -1500,18 +1505,43 @@ async function showAccountPickerFlow({ prfKey, credentialId, allowOverwrite, err
         return;
     }
 
-    // Ask the wallet for balances (non-blocking — shows picker immediately,
-    // balances fill in when ready).
     const addrList = addresses.map(a => a.address);
-
-    // Show picker immediately (without balances)
-    setUI(renderAccountPicker(addresses));
-    attachPickerHandlers({ addresses, prfKey, credentialId, allowOverwrite });
-
-    // Then fetch balances and re-render with them
     const balances = await requestBalancesFromWallet(addrList);
-    if (Object.keys(balances).length > 0) {
-        setUI(renderAccountPicker(addresses, balances));
+
+    if (autoSelect) {
+        // Pick the account with the highest balance (fallback to index 0)
+        let bestIdx = 0;
+        let bestBal = -1;
+        for (let i = 0; i < addresses.length; i++) {
+            const bal = balances[addresses[i].address] || 0;
+            if (bal > bestBal) {
+                bestBal = bal;
+                bestIdx = i;
+            }
+        }
+
+        try {
+            const result = await callWorker('restoreWithPasskey', {
+                prfKey: Array.from(prfKey),
+                credentialId: Array.from(new Uint8Array(credentialId)),
+                prfSalt: Array.from(RESTORE_PRF_SALT),
+                accountIndex: addresses[bestIdx].index,
+                allowOverwrite: !!allowOverwrite,
+            });
+            if (prfKey.fill) prfKey.fill(0);
+            resolveSession({ address: result.address });
+        } catch (err) {
+            if (prfKey.fill) prfKey.fill(0);
+            if (errorEl) showError(errorEl, 'Failed: ' + err.message);
+            else rejectSession('Restore failed: ' + err.message);
+        }
+    } else {
+        // Interactive picker for switch account
+        if (Object.keys(balances).length > 0) {
+            setUI(renderAccountPicker(addresses, balances));
+        } else {
+            setUI(renderAccountPicker(addresses));
+        }
         attachPickerHandlers({ addresses, prfKey, credentialId, allowOverwrite });
     }
 }
@@ -1665,7 +1695,7 @@ async function flowSwitchAccount() {
         }
 
         biometricBtn.querySelector('.biometric-hint').textContent = 'Scanning accounts...';
-        await showAccountPickerFlow({ prfKey, credentialId, allowOverwrite: true, errorEl });
+        await showAccountPickerFlow({ prfKey, credentialId, allowOverwrite: true, errorEl, autoSelect: false });
     };
 }
 
